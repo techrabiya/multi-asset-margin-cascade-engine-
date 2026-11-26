@@ -5,12 +5,14 @@ def compute_margin_shortfall(
     volatility_factor: float,
     maintenance_margin_rate: float = 0.25,
 ) -> dict:
-    """Calculate stressed position value, required margin, and margin shortfall."""
-    effective_shock = price_shock_pct * (1.0 + max(0.0, volatility_factor - 1.0) * 0.25)
+    shock_multiplier = 1.0 + max(0.0, volatility_factor - 1.0) * 0.25
+    effective_shock = price_shock_pct * shock_multiplier
     stressed_value = max(0.0, position_value * (1.0 + effective_shock))
     required_margin = stressed_value * maintenance_margin_rate
-    margin_shortfall = round(max(0.0, required_margin - margin_posted), 2)
-    margin_buffer = round(margin_posted - required_margin, 2)
+
+    raw_shortfall = required_margin - margin_posted
+    margin_shortfall = round(max(0.0, raw_shortfall), 2)
+    margin_buffer = round(-raw_shortfall, 2)
 
     return {
         "stressed_value": round(stressed_value, 2),
@@ -25,7 +27,6 @@ def classify_liquidation_tier(
     margin_posted: float,
     required_margin: float,
 ) -> str:
-    """Classify risk severity into SAFE, MARGIN_WARNING, FORCED_TRIM, or FULL_LIQUIDATION."""
     if required_margin <= 0:
         return "SAFE"
 
@@ -48,24 +49,23 @@ def run_cascade_simulation(
     base_volatility: float = 1.6,
     cascade_spillover_step: float = 0.04,
 ) -> list[dict]:
-    """Run multi-asset margin call and liquidation cascade across positions."""
-    results = []
+    cascade_results = []
     accumulated_contagion = 0.0
 
-    for pos in positions:
-        asset_name = pos["asset"]
-        position_value = float(pos["position_value"])
-        margin_posted = float(pos["margin_posted"])
-        maintenance_rate = float(pos.get("maintenance_margin_rate", 0.25))
+    for item in positions:
+        asset_name = item["asset"]
+        position_value = float(item["position_value"])
+        margin_posted = float(item["margin_posted"])
+        maintenance_rate = float(item.get("maintenance_margin_rate", 0.25))
 
-        active_shock = base_shock_pct - accumulated_contagion
-        active_volatility = base_volatility + (accumulated_contagion * 2.0)
+        current_shock = base_shock_pct - accumulated_contagion
+        current_volatility = base_volatility + (accumulated_contagion * 2.0)
 
         metrics = compute_margin_shortfall(
             position_value=position_value,
             margin_posted=margin_posted,
-            price_shock_pct=active_shock,
-            volatility_factor=active_volatility,
+            price_shock_pct=current_shock,
+            volatility_factor=current_volatility,
             maintenance_margin_rate=maintenance_rate,
         )
 
@@ -80,7 +80,7 @@ def run_cascade_simulation(
         elif tier == "FORCED_TRIM":
             accumulated_contagion += cascade_spillover_step * 0.5
 
-        results.append(
+        cascade_results.append(
             {
                 "asset": asset_name,
                 "tier": tier,
@@ -92,17 +92,37 @@ def run_cascade_simulation(
             }
         )
 
-    return results
+    return cascade_results
 
 
 if __name__ == "__main__":
     sample_positions = [
-        {"asset": "NIFTY_FUT", "position_value": 1200000.0, "margin_posted": 240000.0, "maintenance_margin_rate": 0.25},
-        {"asset": "BANKNIFTY_FUT", "position_value": 1000000.0, "margin_posted": 230000.0, "maintenance_margin_rate": 0.25},
-        {"asset": "USDINR_FUT", "position_value": 800000.0, "margin_posted": 220000.0, "maintenance_margin_rate": 0.20},
-        {"asset": "GOLD_FUT", "position_value": 600000.0, "margin_posted": 180000.0, "maintenance_margin_rate": 0.20},
+        {
+            "asset": "NIFTY_FUT",
+            "position_value": 1200000.0,
+            "margin_posted": 240000.0,
+            "maintenance_margin_rate": 0.25,
+        },
+        {
+            "asset": "BANKNIFTY_FUT",
+            "position_value": 1000000.0,
+            "margin_posted": 230000.0,
+            "maintenance_margin_rate": 0.25,
+        },
+        {
+            "asset": "USDINR_FUT",
+            "position_value": 800000.0,
+            "margin_posted": 220000.0,
+            "maintenance_margin_rate": 0.20,
+        },
+        {
+            "asset": "GOLD_FUT",
+            "position_value": 600000.0,
+            "margin_posted": 180000.0,
+            "maintenance_margin_rate": 0.20,
+        },
     ]
 
-    cascade_report = run_cascade_simulation(sample_positions)
-    for row in cascade_report:
-        print(row)
+    output = run_cascade_simulation(sample_positions)
+    for record in output:
+        print(record)
